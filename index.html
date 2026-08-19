@@ -139,7 +139,7 @@
     // A key pasted here is readable by anyone who opens this page, and a
     // JSONBin *master* key can write to ALL your bins - not just this one.
     // If you really need a key, generate a read-only Access Key for it.
-    const API_KEY   = "$2a$10$xIUsgBA0tRBALwzoMAjI8.xLLqZdn7eyQZKo4GgzlKA33hJ8d3y2O";
+    const API_KEY   = "";
     const ESP32_PATH = "/";   // "/" serves breadboardv3.html
     const STALE_MINS = 90;    // firmware heartbeats hourly; warn past this
     const AUTO_REDIRECT = false; // true = jump automatically after 3s
@@ -169,6 +169,7 @@
         if (!ip) throw new Error("No IP published yet");
 
         currentIP = ip;
+        retryCount = 0;   // success - reset the backoff ladder
         setReady(ip, uptimeS, binTime);
         if (AUTO_REDIRECT) scheduleRedirect(ip);
         else document.getElementById("countdown").textContent = "Press Connect to open the breadboard tool";
@@ -214,6 +215,12 @@
       document.getElementById("last-updated").textContent = line || "Last updated: —";
     }
 
+    // Retry with backoff, then stop. A flat 10s retry loop left open in a
+    // browser tab overnight is ~360 requests/hour - it would eat the whole
+    // 10,000/month free quota by morning if the board happens to be off.
+    let retryCount = 0;
+    const RETRY_DELAYS = [10, 30, 60, 120, 300]; // seconds, then give up
+
     function setError(msg) {
       dot("error");
       document.getElementById("status-text").textContent = "Could not reach machine";
@@ -221,8 +228,33 @@
       el.className = "ip-display error";
       el.textContent = msg;
       document.getElementById("connect-btn").disabled = true;
-      document.getElementById("countdown").textContent = "Retrying in 10s...";
-      setTimeout(fetchIP, 10000);
+
+      const cd = document.getElementById("countdown");
+
+      if (retryCount >= RETRY_DELAYS.length) {
+        cd.innerHTML = "Gave up - <a href='#' onclick='manualRetry();return false;' "
+                     + "style='color:#00ff88'>retry</a>";
+        return;
+      }
+
+      let secs = RETRY_DELAYS[retryCount++];
+      clearInterval(countdownTimer);
+      const tick = () => {
+        if (secs <= 0) {
+          clearInterval(countdownTimer);
+          fetchIP();
+          return;
+        }
+        cd.textContent = `Retrying in ${secs}s...`;
+        secs--;
+      };
+      tick();
+      countdownTimer = setInterval(tick, 1000);
+    }
+
+    function manualRetry() {
+      retryCount = 0;
+      fetchIP();
     }
 
     function dot(state) {
