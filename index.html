@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>ESP32 Portal</title>
+  <title>Wire Cutter</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -113,11 +113,11 @@
 </head>
 <body>
   <div class="card">
-    <h1>⚡ ESP32 Portal</h1>
+    <h1>✂️ Wire Cutter</h1>
 
     <div class="status-line">
       <span class="dot loading" id="dot"></span>
-      <span id="status-text">Fetching device IP...</span>
+      <span id="status-text">Locating machine...</span>
     </div>
 
     <div class="ip-display" id="ip-display">—</div>
@@ -134,9 +134,15 @@
 
   <script>
     // ── CONFIG ──────────────────────────────────────────────
-    const BIN_ID    = "6a854e40da38895dfef5d53c";   // paste JSONBin bin ID
-    const API_KEY   = "$2a$10$xIUsgBA0tRBALwzoMAjI8.xLLqZdn7eyQZKo4GgzlKA33hJ8d3y2O";  // paste JSONBin API key
-    const ESP32_PATH = "/";                 // path to open on ESP32
+    const BIN_ID    = "6a854e40da38895dfef5d53c";
+    // Leave API_KEY empty and set the bin to PUBLIC in JSONBin.
+    // A key pasted here is readable by anyone who opens this page, and a
+    // JSONBin *master* key can write to ALL your bins - not just this one.
+    // If you really need a key, generate a read-only Access Key for it.
+    const API_KEY   = "$2a$10$xIUsgBA0tRBALwzoMAjI8.xLLqZdn7eyQZKo4GgzlKA33hJ8d3y2O";
+    const ESP32_PATH = "/";   // "/" serves breadboardv3.html
+    const STALE_MINS = 90;    // firmware heartbeats hourly; warn past this
+    const AUTO_REDIRECT = false; // true = jump automatically after 3s
     // ────────────────────────────────────────────────────────
 
     let currentIP = null;
@@ -145,19 +151,27 @@
     async function fetchIP() {
       setLoading();
       try {
+        // Public bin needs no key; only send the header if one is set.
         const res = await fetch(`https://api.jsonbin.io/v3/b/${BIN_ID}/latest`, {
-          headers: { "X-Access-Key": API_KEY }
+          headers: API_KEY ? { "X-Access-Key": API_KEY } : {}
         });
-        if (!res.ok) throw new Error("JSONBin fetch failed");
+        if (!res.ok) throw new Error(`JSONBin returned ${res.status}`);
         const data = await res.json();
-        const ip = data.record.ip;
-        const updatedAt = data.record.updated_at;
 
-        if (!ip) throw new Error("No IP in record");
+        const record = data.record || {};
+        const ip = record.ip;
+        // The firmware writes uptime_s (seconds since boot), NOT updated_at -
+        // the ESP32 has no NTP clock, so it can't produce a real timestamp.
+        // JSONBin's own metadata carries the wall-clock write time instead.
+        const uptimeS  = record.uptime_s;
+        const binTime  = data.metadata && data.metadata.createdAt;
+
+        if (!ip) throw new Error("No IP published yet");
 
         currentIP = ip;
-        setReady(ip, updatedAt);
-        scheduleRedirect(ip);
+        setReady(ip, uptimeS, binTime);
+        if (AUTO_REDIRECT) scheduleRedirect(ip);
+        else document.getElementById("countdown").textContent = "Press Connect to open the breadboard tool";
 
       } catch (e) {
         setError(e.message);
@@ -166,29 +180,43 @@
 
     function setLoading() {
       dot("loading");
-      document.getElementById("status-text").textContent = "Fetching device IP...";
+      document.getElementById("status-text").textContent = "Locating machine...";
       document.getElementById("ip-display").className = "ip-display";
       document.getElementById("ip-display").textContent = "—";
       document.getElementById("connect-btn").disabled = true;
       document.getElementById("countdown").textContent = "";
     }
 
-    function setReady(ip, updatedAt) {
+    function setReady(ip, uptimeS, binTime) {
       dot("ready");
-      document.getElementById("status-text").textContent = "Device found";
+      document.getElementById("status-text").textContent = "Machine online";
       document.getElementById("ip-display").textContent = ip;
       document.getElementById("connect-btn").disabled = false;
 
-      if (updatedAt) {
-        const d = new Date(updatedAt);
-        document.getElementById("last-updated").textContent =
-          "Last seen: " + d.toLocaleString();
+      let line = "";
+      if (binTime) {
+        const d = new Date(binTime);
+        const ageMin = (Date.now() - d.getTime()) / 60000;
+        line = "Last seen: " + d.toLocaleString();
+        // The bin is only as fresh as the last push. If the board has been
+        // off since, this IP is a leftover and the redirect will hang.
+        if (ageMin > STALE_MINS) {
+          line += "  (stale - board may be off)";
+          document.getElementById("status-text").textContent = "Machine offline?";
+          dot("loading");
+        }
       }
+      if (uptimeS != null) {
+        const h = Math.floor(uptimeS / 3600);
+        const m = Math.floor((uptimeS % 3600) / 60);
+        line += (line ? " | " : "") + `Board uptime at push: ${h}h ${m}m`;
+      }
+      document.getElementById("last-updated").textContent = line || "Last updated: —";
     }
 
     function setError(msg) {
       dot("error");
-      document.getElementById("status-text").textContent = "Could not reach device";
+      document.getElementById("status-text").textContent = "Could not reach machine";
       const el = document.getElementById("ip-display");
       el.className = "ip-display error";
       el.textContent = msg;
